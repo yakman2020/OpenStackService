@@ -431,13 +431,7 @@ void CWrapperService::OnStart(DWORD dwArgc, LPWSTR *lpszArgv)
     boolean waitforfinish = true;
 
     SetServiceStatus(SERVICE_RUNNING);
-    if (!m_ServicesBefore.empty()) {
-        if (!WaitForDependents()) {
-            *logfile << L"Failure in WaitForDepenents" << std::endl;
-            throw ERROR_SERVICE_DEPENDENCY_FAIL;
-            return;
-        }
-    }
+
 
     if (m_ServiceType == SERVICE_TYPE_FORKING) {
         waitforfinish = false;
@@ -456,6 +450,7 @@ void CWrapperService::OnStart(DWORD dwArgc, LPWSTR *lpszArgv)
         *logfile << L"before file " << before << std::endl;
 
         wstring path = m_unitPath;
+
         path.append(before);
         wifstream wifs(path);
         if (wifs.is_open()) {
@@ -489,6 +484,12 @@ for (auto before : this->m_ServicesBefore) {
 for (auto after : this->m_ServicesAfter) {
    *logfile << L"after service" << after << std::endl;
 }
+*logfile << L"WaitForDependents = " << m_ServicesBefore.size() << std::endl;
+    if (!WaitForDependents()) {
+            *logfile << L"Failure in WaitForDepenents" << std::endl;
+            throw ERROR_SERVICE_DEPENDENCY_FAIL;
+            return;
+    }
 
     // OK. We are going to launch. First resolve the environment
 
@@ -1032,61 +1033,53 @@ boolean
 CWrapperService::WaitForDependents() 
 
 {
-    DWORD bytes_needed = 0;
-    DWORD num_services = 0;
-    ENUM_SERVICE_STATUS *pServices;
-
+    int count = 0;
     SC_HANDLE hsc = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (!hsc) {
         int last_error = GetLastError();
-        wcerr << L"WaitForDependents could not open service manager win err = " << last_error << std::endl;
+        *logfile << L"WaitForDependents could not open service manager win err = " << last_error << std::endl;
         return false;
     }
 
-    SC_HANDLE hsvc = OpenServiceW(hsc, m_ServiceName.c_str(), GENERIC_READ);
-    if (hsvc == NULL)
-    {
-        wcerr << L"WaitForDependents OpeService failed " << GetLastError() << std::endl;
-        CloseServiceHandle(hsc);
-        return false;
-    }
-
-    // Figure out how much data I need to alloc
-    (void)::EnumDependentServices(
-                                    hsvc,           //  _In_      SC_HANDLE             hService,
-                                    SERVICE_ACTIVE, //  _In_      DWORD                 dwServiceState,
-                                    NULL,           //  _Out_opt_ LPENUM_SERVICE_STATUS lpServices,
-                                    0,              //  _In_      DWORD                 cbBufSize,
-                                    &bytes_needed,  //  _Out_     LPDWORD               pcbBytesNeeded,
-                                    &num_services   //  _Out_     LPDWORD               lpServicesReturned
-                                );
-
-    pServices = (ENUM_SERVICE_STATUS *)new char[bytes_needed];
+    boolean done = false;
     do {
-        if (!::EnumDependentServices(
-                                    hsvc,           //  _In_      SC_HANDLE             hService,
-                                    SERVICE_ACTIVE, //  _In_      DWORD                 dwServiceState,
-                                    pServices,      //  _Out_opt_ LPENUM_SERVICE_STATUS lpServices,
-                                    bytes_needed,   //  _In_      DWORD                 cbBufSize,
-                                    &bytes_needed,  //  _Out_     LPDWORD               pcbBytesNeeded,
-                                    &num_services   //  _Out_     LPDWORD               lpServicesReturned
-                               ) ) {
-            int last_error = GetLastError();
-             // 2do: handle MORE_DATA
-            wcerr << L"WaitForDependents could not enum dependent services win err = " << last_error << std::endl;
-            CloseServiceHandle(hsvc);
-            CloseServiceHandle(hsc);
-            return false;
-        }
-        if (num_services > 0) {
-             Sleep(100); // sleep for 0.1 sec as we check
-        }
-    } while(num_services > 0);
+        done = true;
+        for (auto service : m_ServicesAfter) {
+            SERVICE_STATUS service_status = {0};
+            SC_HANDLE hsvc = OpenServiceW(hsc, service.c_str(), GENERIC_READ);
+            if (!hsvc) {
+                *logfile << L"WaitForDependents OpeService failed " << GetLastError() << std::endl;
+                CloseServiceHandle(hsc);
+                return true;  // If it doesn't exist we cant wait for it
+            }
 
-    CloseServiceHandle(hsvc);
+*logfile << L"Check status for service " << service << std::endl;
+
+            if (!::QueryServiceStatus( hsvc, &service_status) ) {
+                int last_error = GetLastError();
+                 // 2do: handle MORE_DATA
+                *logfile << L"WaitForDependents could not enum dependent services win err = " << last_error << std::endl;
+                CloseServiceHandle(hsc);
+                return false;
+            }
+
+*logfile << L"status for service " << service << service_status.dwCurrentState << std::endl;
+            if (service_status.dwCurrentState != SERVICE_STOP_PENDING &&
+                service_status.dwCurrentState != SERVICE_STOPPED ) {
+*logfile << L"done" << std::endl;
+                done = false;
+                break; // If someone is running we must wait. No need to keep looking
+            }
+        }
+
+        if (!done) {
+             Sleep(1000); // sleep for 0.1 sec as we check
+        }
+        count++;
+    } while(!done && count < 500 );
+
     CloseServiceHandle(hsc);
 
+   *logfile << L"Wait for dependents exits " << std::endl;
     return true;
 }
-
-
