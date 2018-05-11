@@ -1028,6 +1028,7 @@ CWrapperService::EvalConditionControlGroupController(std::wstring arg)
 
 
 
+
 boolean
 CWrapperService::WaitForDependents() 
 
@@ -1088,5 +1089,4 @@ CWrapperService::WaitForDependents()
 
     return true;
 }
-
 
