@@ -447,14 +447,16 @@ PROCESS_INFORMATION CWrapperService::StartProcess(LPCWSTR cmdLine, DWORD process
         startupInfo.hStdOutput = m_StdOut->GetHandle();
 *logfile << L"has stdout " << std::endl;
 
-        startupInfo.hStdInput = NULL;
     }
 
     if (m_StdErr->GetHandle() != INVALID_HANDLE_VALUE) {
         startupInfo.dwFlags |= STARTF_USESTDHANDLES;
         startupInfo.hStdError  = m_StdErr->GetHandle();
 *logfile << L"has stderr " << std::endl;
-        startupInfo.hStdInput = NULL;
+    }
+
+    if (startupInfo.dwFlags &= STARTF_USESTDHANDLES) {
+        startupInfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     }
 
     DWORD dwCreationFlags = processFlags | CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS | CREATE_UNICODE_ENVIRONMENT;
@@ -583,6 +585,15 @@ for (auto after : this->m_ServicesAfter) {
    *logfile << L"after service" << after << std::endl;
 }
 
+*logfile << L"WaitForDependents = " << std::endl;
+
+    this->SetServiceStatus(SERVICE_START_PENDING);
+    if (!this->WaitForDependents()) {
+        *logfile << L"Failure in WaitForDepenents" << std::endl;
+        throw ERROR_SERVICE_DEPENDENCY_FAIL;
+        return;
+    }
+
     // OK. We are going to launch. First resolve the environment
 
     GetCurrentEnv();
@@ -606,6 +617,7 @@ for (auto after : this->m_ServicesAfter) {
         m_envBuf.append(L"=");
         m_envBuf.append(this_pair.second);
         m_envBuf.push_back(L'\0');
+*logfile << L"env: " << this_pair.first << "=" << this_pair.second << std::endl;
     }
     m_envBuf.push_back(L'\0');
 
@@ -686,14 +698,6 @@ DWORD WINAPI CWrapperService::ServiceThread(LPVOID param)
 
     boolean waitforfinish = true;
 
-*logfile << L"WaitForDependents = " << std::endl;
-
-    self->SetServiceStatus(SERVICE_START_PENDING);
-    if (!self->WaitForDependents()) {
-        *logfile << L"Failure in WaitForDepenents" << std::endl;
-        return ERROR_SERVICE_DEPENDENCY_FAIL;
-    }
-
     do {
         self->SetServiceStatus(SERVICE_RUNNING);
         self->m_IsStopping = FALSE;
@@ -704,7 +708,7 @@ DWORD WINAPI CWrapperService::ServiceThread(LPVOID param)
     
         PROCESS_INFORMATION processInformation;
         if (!self->m_ExecStartCmdLine.empty()) {
-            processInformation = self->StartProcess(self->m_ExecStartCmdLine.c_str(), CREATE_NEW_PROCESS_GROUP, false);
+            processInformation = self->StartProcess(self->m_ExecStartCmdLine.c_str(), 0, false);
             self->m_dwProcessId = processInformation.dwProcessId;
     
     *logfile << "waitfor main process " << std::endl;
@@ -836,14 +840,23 @@ void WINAPI CWrapperService::KillProcessTree(DWORD dwProcId)
         HANDLE hProc = ::OpenProcess(PROCESS_ALL_ACCESS, FALSE, dwProcId);
         if (hProc)
         {
-            if (!GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, m_dwProcessId )) {
+         //   if (AttachConsole(dwProcId)) {
+                SetConsoleCtrlHandler(NULL, true); // Disable Ctrl processing from here
+                if (!GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0)) {
+                    // Complain
+                    DWORD errcode = GetLastError();
+                    *logfile << L"could not send break event to " << m_ServiceName << "error code " << errcode << std::endl;
+                }
+                if (::WaitForSingleObject(hProc, 10000) == WAIT_TIMEOUT) {
+                    *logfile << L"did not respond to break event: " << m_ServiceName  << std::endl;
+                }
+          //      ::FreeConsole();
+           // }
+         //   else {
                 // Complain
-                DWORD errcode = GetLastError();
-                *logfile << L"could not send break event to " << m_ServiceName  << "error code " << errcode << std::endl;
-            }
-            if (::WaitForSingleObject(hProc, 10000) == WAIT_TIMEOUT) {
-                *logfile << L"did not respond to break event: " << m_ServiceName  << std::endl;
-            }
+          //       DWORD errcode = GetLastError();
+           //      *logfile << L"could not attach console to " << m_ServiceName << "error code " << errcode << std::endl;
+          //  }
             ::TerminateProcess(hProc, 1);
             ::CloseHandle(hProc);
         }
